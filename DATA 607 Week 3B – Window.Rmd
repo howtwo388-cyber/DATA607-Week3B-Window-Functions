@@ -1,0 +1,123 @@
+---
+title: "DATA 607 Week 3B - Window Functions"
+author: "Patricio Romero"
+date: "2026-09-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+SQL window functions perform calculations across groups of related rows without reducing the dataset to one row per group. They are useful for analyzing time-series data because each original observation can remain visible while cumulative and moving statistics are calculated.
+
+This project will use daily stock-price data for Apple, Microsoft, and Google. PostgreSQL will store the observations, and SQL window functions will later calculate a year-to-date average and a six-day moving average for each company.
+
+## Data Collection
+
+The dataset will contain daily adjusted closing prices for the following companies:
+
+- Apple (`AAPL`)
+- Microsoft (`MSFT`)
+- Alphabet/Google (`GOOGL`)
+
+The observations will begin in January 2022 and will include one row for each available trading day and company.
+
+Each record will contain:
+
+- `price_date`: trading date
+- `symbol`: stock ticker
+- `company`: company name
+- `adjusted_close`: adjusted closing price
+
+Non-trading days will not be created or estimated. Only available trading-day observations will be stored.
+
+## Planned Approach
+
+The project will follow these steps:
+
+1. Obtain daily adjusted closing prices for the three selected companies.
+2. Combine the observations into a consistent long-format dataset.
+3. Validate dates, company identifiers, prices, and duplicate records.
+4. Import the prepared data into PostgreSQL.
+5. Confirm the number and date range of observations for each company.
+6. Use a SQL window function to calculate the year-to-date average for each company and calendar year.
+7. Use a second SQL window function to calculate the six-day moving average for each company.
+8. Preserve each daily observation while adding the calculated averages.
+9. Review representative dates to confirm that the window calculations are correct.
+10. Present the SQL code, results, and conclusions in the final report.
+
+The year-to-date calculation will partition the observations by company and calendar year, order them by date, and include all available records from the beginning of the year through the current row.
+
+The six-day moving calculation will partition the observations by company, order them by date, and use the current observation together with the five preceding trading-day observations.
+
+## Database Design
+
+The observations will be stored in a PostgreSQL table named `daily_prices`.
+
+The table will contain:
+
+- `price_id`: generated primary key
+- `price_date`: trading date
+- `symbol`: stock ticker
+- `company`: company name
+- `adjusted_close`: adjusted closing price
+
+A uniqueness rule will prevent more than one observation for the same stock symbol and trading date.
+
+PostgreSQL and pgAdmin 4 will be used to store, inspect, validate, and later analyze the dataset. The calculations will not be performed until the data have been imported and validated.
+
+## Data Retrieval from PostgreSQL
+
+The prepared observations were imported into the PostgreSQL table `daily_prices`. R retrieves the stored data to confirm that the database contains the expected records before any window calculations are performed.
+
+```{r load-database-packages, message=FALSE, warning=FALSE}
+library(DBI)
+library(RPostgres)
+```
+
+```{r database-connection, echo=FALSE, message=FALSE, warning=FALSE}
+con <- dbConnect(
+  RPostgres::Postgres(),
+  host = "127.0.0.1",
+  port = 55433,
+  dbname = "data607_week3",
+  user = "postgres",
+  password = Sys.getenv("DATA607_DB_PASSWORD")
+)
+```
+
+```{r retrieve-data}
+daily_prices <- dbGetQuery(
+  con,
+  "
+  SELECT price_date, symbol, company, adjusted_close
+  FROM daily_prices
+  ORDER BY symbol, price_date
+  "
+)
+
+head(daily_prices)
+```
+
+## Data Validation
+
+The imported data were validated before applying any SQL window functions.
+
+```{r validate-data}
+data.frame(
+  total_observations = nrow(daily_prices),
+  companies = length(unique(daily_prices$symbol)),
+  duplicate_symbol_dates = sum(
+    duplicated(daily_prices[c("symbol", "price_date")])
+  ),
+  missing_prices = sum(is.na(daily_prices$adjusted_close))
+)
+```
+
+
+## AI Use
+
+ChatGPT was used to help interpret the assignment requirements, organize the planned approach, improve the English writing, select an appropriate database structure, and provide coding guidance. I collected and imported the data, ran the validation code, reviewed the results, and confirmed the conclusions myself.

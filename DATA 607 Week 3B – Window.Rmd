@@ -271,6 +271,10 @@ The window functions preserved the original daily stock-price observations while
 
 This analysis demonstrates how SQL window functions can be used to calculate cumulative and moving statistics without reducing the original dataset through aggregation.
 
+```{r disconnect-database}
+dbDisconnect(con)
+```
+
 ## AI Use
 
 ChatGPT was used to help interpret the assignment requirements, organize the planned approach, improve the English writing, select an appropriate database structure, and provide coding guidance. I collected and imported the data, ran the validation code, reviewed the results, and confirmed the conclusions myself.

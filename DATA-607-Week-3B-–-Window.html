@@ -364,31 +364,35 @@ rows without reducing the dataset to one row per group. They are useful
 for analyzing time-series data because each original observation can
 remain visible while cumulative and moving statistics are
 calculated.</p>
-<p>This project will use daily stock-price data for Apple, Microsoft,
-and Google. PostgreSQL will store the observations, and SQL window
-functions will later calculate a year-to-date average and a six-day
-moving average for each company.</p>
+<p>This project uses daily stock-price data for Apple, Microsoft, and
+Google. PostgreSQL stores the observations, and SQL window functions are
+used to calculate a year-to-date average and a six-day moving average
+for each company.</p>
 </div>
 <div id="data-collection" class="section level2">
 <h2>Data Collection</h2>
-<p>The dataset will contain daily adjusted closing prices for the
-following companies:</p>
+<p>Daily adjusted closing prices were retrieved from Yahoo Finance using
+the R package <code>quantmod</code> and its <code>getSymbols()</code>
+function.</p>
+<p>The dataset contains daily adjusted closing prices for the following
+companies:</p>
 <ul>
 <li>Apple (<code>AAPL</code>)</li>
 <li>Microsoft (<code>MSFT</code>)</li>
 <li>Alphabet/Google (<code>GOOGL</code>)</li>
 </ul>
-<p>The observations will begin in January 2022 and will include one row
-for each available trading day and company.</p>
-<p>Each record will contain:</p>
+<p>The observations begin on January 3, 2022, and include one row for
+each available trading day and company. The latest observations used in
+this approach submission are dated September 16, 2026.</p>
+<p>Each record contains:</p>
 <ul>
 <li><code>price_date</code>: trading date</li>
 <li><code>symbol</code>: stock ticker</li>
 <li><code>company</code>: company name</li>
 <li><code>adjusted_close</code>: adjusted closing price</li>
 </ul>
-<p>Non-trading days will not be created or estimated. Only available
-trading-day observations will be stored.</p>
+<p>Non-trading days were not created or estimated. Only available
+trading-day observations were stored.</p>
 </div>
 <div id="planned-approach" class="section level2">
 <h2>Planned Approach</h2>
@@ -471,13 +475,230 @@ functions.</p>
 <pre class="r"><code>data.frame(
   total_observations = nrow(daily_prices),
   companies = length(unique(daily_prices$symbol)),
+  missing_dates = sum(is.na(daily_prices$price_date)),
+  missing_symbols = sum(is.na(daily_prices$symbol) | daily_prices$symbol == &quot;&quot;),
+  missing_companies = sum(is.na(daily_prices$company) | daily_prices$company == &quot;&quot;),
   duplicate_symbol_dates = sum(
     duplicated(daily_prices[c(&quot;symbol&quot;, &quot;price_date&quot;)])
   ),
   missing_prices = sum(is.na(daily_prices$adjusted_close))
 )</code></pre>
-<pre><code>##   total_observations companies duplicate_symbol_dates missing_prices
-## 1               3540         3                      0              0</code></pre>
+<pre><code>##   total_observations companies missing_dates missing_symbols missing_companies
+## 1               3540         3             0               0                 0
+##   duplicate_symbol_dates missing_prices
+## 1                      0              0</code></pre>
+</div>
+<div id="observation-summary-by-company" class="section level2">
+<h2>Observation Summary by Company</h2>
+<p>The number of observations and the available date range were
+confirmed for each stock symbol before applying the window
+calculations.</p>
+<pre class="r"><code>dbGetQuery(
+  con,
+  &quot;
+  SELECT
+      symbol,
+      company,
+      COUNT(*) AS observations,
+      MIN(price_date) AS first_date,
+      MAX(price_date) AS last_date
+  FROM daily_prices
+  GROUP BY symbol, company
+  ORDER BY symbol;
+  &quot;
+)</code></pre>
+<pre><code>##   symbol   company observations first_date  last_date
+## 1   AAPL     Apple         1180 2022-01-03 2026-09-16
+## 2  GOOGL  Alphabet         1180 2022-01-03 2026-09-16
+## 3   MSFT Microsoft         1180 2022-01-03 2026-09-16</code></pre>
+</div>
+<div id="year-to-date-average" class="section level2">
+<h2>Year-to-Date Average</h2>
+<p>The year-to-date average is calculated independently for each stock
+symbol and calendar year. The window begins with the first available
+trading day of the year and continues through the current
+observation.</p>
+<pre class="r"><code>ytd_prices &lt;- dbGetQuery(
+  con,
+  &quot;
+  SELECT
+      price_date,
+      symbol,
+      company,
+      adjusted_close,
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol, DATE_PART(&#39;year&#39;, price_date)
+          ORDER BY price_date
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS ytd_average
+  FROM daily_prices
+  ORDER BY symbol, price_date;
+  &quot;
+)
+
+head(ytd_prices)</code></pre>
+<pre><code>##   price_date symbol company adjusted_close ytd_average
+## 1 2022-01-03   AAPL   Apple       177.7864    177.7864
+## 2 2022-01-04   AAPL   Apple       175.5300    176.6582
+## 3 2022-01-05   AAPL   Apple       170.8609    174.7258
+## 4 2022-01-06   AAPL   Apple       168.0087    173.0465
+## 5 2022-01-07   AAPL   Apple       168.1747    172.0721
+## 6 2022-01-10   AAPL   Apple       168.1943    171.4258</code></pre>
+</div>
+<div id="six-day-moving-average" class="section level2">
+<h2>Six-Day Moving Average</h2>
+<p>The six-day moving average is calculated independently for each stock
+symbol. The window includes the current trading-day observation and the
+five preceding trading-day observations.</p>
+<pre class="r"><code>moving_prices &lt;- dbGetQuery(
+  con,
+  &quot;
+  SELECT
+      price_date,
+      symbol,
+      company,
+      adjusted_close,
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol
+          ORDER BY price_date
+          ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      ) AS six_day_moving_average
+  FROM daily_prices
+  ORDER BY symbol, price_date;
+  &quot;
+)
+
+head(moving_prices, 10)</code></pre>
+<pre><code>##    price_date symbol company adjusted_close six_day_moving_average
+## 1  2022-01-03   AAPL   Apple       177.7864               177.7864
+## 2  2022-01-04   AAPL   Apple       175.5300               176.6582
+## 3  2022-01-05   AAPL   Apple       170.8609               174.7258
+## 4  2022-01-06   AAPL   Apple       168.0087               173.0465
+## 5  2022-01-07   AAPL   Apple       168.1747               172.0721
+## 6  2022-01-10   AAPL   Apple       168.1943               171.4258
+## 7  2022-01-11   AAPL   Apple       171.0172               170.2976
+## 8  2022-01-12   AAPL   Apple       171.4568               169.6188
+## 9  2022-01-13   AAPL   Apple       168.1943               169.1743
+## 10 2022-01-14   AAPL   Apple       169.0539               169.3485</code></pre>
+</div>
+<div id="combined-window-functions" class="section level2">
+<h2>Combined Window Functions</h2>
+<p>The two window calculations can be included in the same SQL query.
+This preserves every original daily stock-price observation while adding
+both the year-to-date average and the six-day moving average.</p>
+<pre class="r"><code>window_results &lt;- dbGetQuery(
+  con,
+  &quot;
+  SELECT
+      price_date,
+      symbol,
+      company,
+      adjusted_close,
+
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol, DATE_PART(&#39;year&#39;, price_date)
+          ORDER BY price_date
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS ytd_average,
+
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol
+          ORDER BY price_date
+          ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      ) AS six_day_moving_average
+
+  FROM daily_prices
+  ORDER BY symbol, price_date;
+  &quot;
+)
+
+head(window_results, 10)</code></pre>
+<pre><code>##    price_date symbol company adjusted_close ytd_average six_day_moving_average
+## 1  2022-01-03   AAPL   Apple       177.7864    177.7864               177.7864
+## 2  2022-01-04   AAPL   Apple       175.5300    176.6582               176.6582
+## 3  2022-01-05   AAPL   Apple       170.8609    174.7258               174.7258
+## 4  2022-01-06   AAPL   Apple       168.0087    173.0465               173.0465
+## 5  2022-01-07   AAPL   Apple       168.1747    172.0721               172.0721
+## 6  2022-01-10   AAPL   Apple       168.1943    171.4258               171.4258
+## 7  2022-01-11   AAPL   Apple       171.0172    171.3675               170.2976
+## 8  2022-01-12   AAPL   Apple       171.4568    171.3786               169.6188
+## 9  2022-01-13   AAPL   Apple       168.1943    171.0248               169.1743
+## 10 2022-01-14   AAPL   Apple       169.0539    170.8277               169.3485</code></pre>
+</div>
+<div id="representative-date-verification" class="section level2">
+<h2>Representative Date Verification</h2>
+<p>Representative observations were reviewed for each stock symbol to
+confirm that the year-to-date and six-day moving averages were
+calculated as expected.</p>
+<pre class="r"><code>representative_results &lt;- window_results[
+  window_results$symbol %in% c(&quot;AAPL&quot;, &quot;GOOGL&quot;, &quot;MSFT&quot;) &amp;
+  window_results$price_date %in% as.Date(c(
+    &quot;2022-01-03&quot;,
+    &quot;2022-01-10&quot;,
+    &quot;2022-02-01&quot;
+  )),
+]
+
+representative_results</code></pre>
+<pre><code>##      price_date symbol   company adjusted_close ytd_average
+## 1    2022-01-03   AAPL     Apple       177.7864    177.7864
+## 6    2022-01-10   AAPL     Apple       168.1943    171.4258
+## 21   2022-02-01   AAPL     Apple       170.5581    166.1407
+## 1181 2022-01-03  GOOGL  Alphabet       143.6248    143.6248
+## 1186 2022-01-10  GOOGL  Alphabet       137.3624    138.7794
+## 1201 2022-02-01  GOOGL  Alphabet       136.3466    134.7597
+## 2361 2022-01-03   MSFT Microsoft       321.8564    321.8564
+## 2366 2022-01-10   MSFT Microsoft       302.1652    308.0480
+## 2381 2022-02-01   MSFT Microsoft       296.8676    296.8510
+##      six_day_moving_average
+## 1                  177.7864
+## 6                  171.4258
+## 21                 162.5402
+## 1181               143.6248
+## 1186               138.7794
+## 1201               130.6685
+## 2361               321.8564
+## 2366               308.0480
+## 2381               290.5346</code></pre>
+</div>
+<div id="window-results-validation" class="section level2">
+<h2>Window Results Validation</h2>
+<p>The window-function results are validated by comparing the number of
+calculated observations with the original dataset and checking for
+missing calculated values.</p>
+<pre class="r"><code>data.frame(
+  original_observations = nrow(daily_prices),
+  calculated_observations = nrow(window_results),
+  missing_ytd_values = sum(is.na(window_results$ytd_average)),
+  missing_moving_values = sum(is.na(window_results$six_day_moving_average))
+)</code></pre>
+<pre><code>##   original_observations calculated_observations missing_ytd_values
+## 1                  3540                    3540                  0
+##   missing_moving_values
+## 1                     0</code></pre>
+</div>
+<div id="results-and-conclusion" class="section level2">
+<h2>Results and Conclusion</h2>
+<p>The implementation followed the planned approach. The stock-price
+observations were stored in PostgreSQL and analyzed using SQL window
+functions.</p>
+<p>The year-to-date average was calculated independently for each stock
+symbol and calendar year. For each observation, the window included all
+available trading-day records from the beginning of the year through the
+current row.</p>
+<p>The six-day moving average was calculated independently for each
+stock symbol using the current trading-day observation and the five
+preceding trading-day observations. For the first observations of each
+stock, PostgreSQL used the available rows until a complete
+six-observation window was available.</p>
+<p>The window functions preserved the original daily stock-price
+observations while adding the calculated averages to each row. The
+validation results confirmed that the number of calculated observations
+matched the number of original observations and that the calculated
+window values contained no missing values.</p>
+<p>This analysis demonstrates how SQL window functions can be used to
+calculate cumulative and moving statistics without reducing the original
+dataset through aggregation.</p>
 </div>
 <div id="ai-use" class="section level2">
 <h2>AI Use</h2>

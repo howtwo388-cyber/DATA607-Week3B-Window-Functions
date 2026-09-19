@@ -13,26 +13,28 @@ knitr::opts_chunk$set(echo = TRUE)
 
 SQL window functions perform calculations across groups of related rows without reducing the dataset to one row per group. They are useful for analyzing time-series data because each original observation can remain visible while cumulative and moving statistics are calculated.
 
-This project will use daily stock-price data for Apple, Microsoft, and Google. PostgreSQL will store the observations, and SQL window functions will later calculate a year-to-date average and a six-day moving average for each company.
+This project uses daily stock-price data for Apple, Microsoft, and Google. PostgreSQL stores the observations, and SQL window functions are used to calculate a year-to-date average and a six-day moving average for each company.
 
 ## Data Collection
 
-The dataset will contain daily adjusted closing prices for the following companies:
+Daily adjusted closing prices were retrieved from Yahoo Finance using the R package `quantmod` and its `getSymbols()` function.
+
+The dataset contains daily adjusted closing prices for the following companies:
 
 - Apple (`AAPL`)
 - Microsoft (`MSFT`)
 - Alphabet/Google (`GOOGL`)
 
-The observations will begin in January 2022 and will include one row for each available trading day and company.
+The observations begin on January 3, 2022, and include one row for each available trading day and company. The latest observations used in this approach submission are dated September 16, 2026.
 
-Each record will contain:
+Each record contains:
 
 - `price_date`: trading date
 - `symbol`: stock ticker
 - `company`: company name
 - `adjusted_close`: adjusted closing price
 
-Non-trading days will not be created or estimated. Only available trading-day observations will be stored.
+Non-trading days were not created or estimated. Only available trading-day observations were stored.
 
 ## Planned Approach
 
@@ -110,6 +112,9 @@ The imported data were validated before applying any SQL window functions.
 data.frame(
   total_observations = nrow(daily_prices),
   companies = length(unique(daily_prices$symbol)),
+  missing_dates = sum(is.na(daily_prices$price_date)),
+  missing_symbols = sum(is.na(daily_prices$symbol) | daily_prices$symbol == ""),
+  missing_companies = sum(is.na(daily_prices$company) | daily_prices$company == ""),
   duplicate_symbol_dates = sum(
     duplicated(daily_prices[c("symbol", "price_date")])
   ),
@@ -117,6 +122,154 @@ data.frame(
 )
 ```
 
+## Observation Summary by Company
+
+The number of observations and the available date range were confirmed for each stock symbol before applying the window calculations.
+
+```{r observation-summary}
+dbGetQuery(
+  con,
+  "
+  SELECT
+      symbol,
+      company,
+      COUNT(*) AS observations,
+      MIN(price_date) AS first_date,
+      MAX(price_date) AS last_date
+  FROM daily_prices
+  GROUP BY symbol, company
+  ORDER BY symbol;
+  "
+)
+```
+
+## Year-to-Date Average
+
+The year-to-date average is calculated independently for each stock symbol and calendar year. The window begins with the first available trading day of the year and continues through the current observation.
+
+```{r ytd-average}
+ytd_prices <- dbGetQuery(
+  con,
+  "
+  SELECT
+      price_date,
+      symbol,
+      company,
+      adjusted_close,
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol, DATE_PART('year', price_date)
+          ORDER BY price_date
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS ytd_average
+  FROM daily_prices
+  ORDER BY symbol, price_date;
+  "
+)
+
+head(ytd_prices)
+```
+## Six-Day Moving Average
+
+The six-day moving average is calculated independently for each stock symbol. The window includes the current trading-day observation and the five preceding trading-day observations.
+
+```{r six-day-moving-average}
+moving_prices <- dbGetQuery(
+  con,
+  "
+  SELECT
+      price_date,
+      symbol,
+      company,
+      adjusted_close,
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol
+          ORDER BY price_date
+          ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      ) AS six_day_moving_average
+  FROM daily_prices
+  ORDER BY symbol, price_date;
+  "
+)
+
+head(moving_prices, 10)
+```
+
+## Combined Window Functions
+
+The two window calculations can be included in the same SQL query. This preserves every original daily stock-price observation while adding both the year-to-date average and the six-day moving average.
+
+```{r combined-window-functions}
+window_results <- dbGetQuery(
+  con,
+  "
+  SELECT
+      price_date,
+      symbol,
+      company,
+      adjusted_close,
+
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol, DATE_PART('year', price_date)
+          ORDER BY price_date
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS ytd_average,
+
+      AVG(adjusted_close) OVER (
+          PARTITION BY symbol
+          ORDER BY price_date
+          ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      ) AS six_day_moving_average
+
+  FROM daily_prices
+  ORDER BY symbol, price_date;
+  "
+)
+
+head(window_results, 10)
+```
+
+## Representative Date Verification
+
+Representative observations were reviewed for each stock symbol to confirm that the year-to-date and six-day moving averages were calculated as expected.
+
+```{r representative-dates}
+representative_results <- window_results[
+  window_results$symbol %in% c("AAPL", "GOOGL", "MSFT") &
+  window_results$price_date %in% as.Date(c(
+    "2022-01-03",
+    "2022-01-10",
+    "2022-02-01"
+  )),
+]
+
+representative_results
+```
+
+
+## Window Results Validation
+
+The window-function results are validated by comparing the number of calculated observations with the original dataset and checking for missing calculated values.
+
+```{r validate-window-results}
+data.frame(
+  original_observations = nrow(daily_prices),
+  calculated_observations = nrow(window_results),
+  missing_ytd_values = sum(is.na(window_results$ytd_average)),
+  missing_moving_values = sum(is.na(window_results$six_day_moving_average))
+)
+```
+
+## Results and Conclusion
+
+The implementation followed the planned approach. The stock-price observations were stored in PostgreSQL and analyzed using SQL window functions.
+
+The year-to-date average was calculated independently for each stock symbol and calendar year. For each observation, the window included all available trading-day records from the beginning of the year through the current row.
+
+The six-day moving average was calculated independently for each stock symbol using the current trading-day observation and the five preceding trading-day observations. For the first observations of each stock, PostgreSQL used the available rows until a complete six-observation window was available.
+
+The window functions preserved the original daily stock-price observations while adding the calculated averages to each row. The validation results confirmed that the number of calculated observations matched the number of original observations and that the calculated window values contained no missing values.
+
+This analysis demonstrates how SQL window functions can be used to calculate cumulative and moving statistics without reducing the original dataset through aggregation.
 
 ## AI Use
 
